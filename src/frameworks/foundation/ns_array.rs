@@ -280,6 +280,13 @@ pub const CLASSES: ClassExports = objc_classes! {
     autorelease(env, new)
 }
 
++ (id)arrayWithObject:(id)object {
+    retain(env, object);
+    let objects = vec![object];
+    let array = mutable_from_vec(env, objects);
+    autorelease(env, array)
+}
+
 + (id)arrayWithObjects:(id)firstObj, ...args {
     retain(env, firstObj);
     let mut objects = vec![firstObj];

@@ -41,6 +41,34 @@ fn CFStringAppend(
     msg![env; the_string appendString:appended_string]
 }
 
+fn CFStringAppendCharacters(
+    env: &mut Environment,
+    the_string: CFMutableStringRef,
+    chars: ConstPtr<unichar>,
+    num_chars: CFIndex,
+) {
+    assert!(num_chars >= 0);
+
+    if num_chars == 0 {
+        return;
+    }
+
+    // 게스트(iOS) 메모리에서 UTF-16 코드 유닛 읽기
+    let utf16: Vec<u16> = (0..num_chars)
+        .map(|i| env.mem.read(chars + (i as u32)))
+        .collect();
+
+    // UTF-16을 Rust 문자열로 변환
+    let text = String::from_utf16(&utf16)
+        .expect("CFStringAppendCharacters: invalid UTF-16");
+
+    // NSString 객체 생성
+    let appended_string = ns_string::from_rust_string(env, text);
+
+    // 기존 CFStringAppend 구현 재사용
+    CFStringAppend(env, the_string, appended_string);
+}
+
 fn CFStringAppendCString(
     env: &mut Environment,
     string: CFMutableStringRef,
@@ -446,6 +474,7 @@ fn CFStringNormalize(
 
 pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(CFStringAppend(_, _)),
+    export_c_func!(CFStringAppendCharacters(_, _, _)),
     export_c_func!(CFStringAppendCString(_, _, _)),
     export_c_func!(CFStringAppendFormat(_, _, _, _)),
     export_c_func!(CFStringConvertEncodingToNSStringEncoding(_)),

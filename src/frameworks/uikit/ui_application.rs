@@ -6,6 +6,7 @@
 //! `UIApplication` and `UIApplicationMain`.
 
 use super::ui_device::*;
+use crate::frameworks::core_graphics::{CGPoint, CGRect, CGSize};
 use crate::dyld::{export_c_func, ConstantExports, FunctionExports, HostConstant};
 use crate::frameworks::foundation::ns_string::{from_rust_string, get_static_str};
 use crate::frameworks::foundation::{ns_array, ns_string, NSInteger, NSUInteger};
@@ -90,6 +91,22 @@ pub const CLASSES: ClassExports = objc_classes! {
         if delegate != old_delegate {
             release(env, old_delegate);
         }
+    }
+}
+
+- (CGRect)statusBarFrame {
+    if env.framework_state.uikit.ui_application.status_bar_hidden {
+        return CGRect::default();
+    }
+
+    let (width, _) = env.window().device_family().portrait_size();
+
+    CGRect {
+        origin: CGPoint { x: 0.0, y: 0.0 },
+        size: CGSize {
+            width: width as f32,
+            height: 20.0,
+        },
     }
 }
 
