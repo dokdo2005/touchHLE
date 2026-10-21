@@ -19,7 +19,7 @@ use super::{NSTimeInterval, NSUInteger};
 use crate::frameworks::foundation::ns_run_loop::{add_perform_request, cancel_perform_requests};
 use crate::frameworks::foundation::ns_thread::detach_new_thread_inner;
 use crate::libc::semaphore::{host_destroy_semaphore, sem_wait};
-use crate::mem::MutVoidPtr;
+use crate::mem::{ConstVoidPtr, MutVoidPtr};
 use crate::objc::{
     autorelease, id, msg, msg_class, msg_send, msg_send_no_type_checking, nil, objc_classes,
     retain, Class, ClassExports, NSZonePtr, ObjC, TrivialHostObject, SEL,
@@ -65,6 +65,11 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 + (bool)instancesRespondToSelector:(SEL)selector {
     env.objc.class_has_method(this, selector)
+}
+
+// NSObject protocol conformance is inherited by subclasses' metaclasses.
++ (bool)conformsToProtocol:(ConstVoidPtr)protocol {
+    env.objc.class_conforms_to_protocol(&env.mem, this, protocol)
 }
 
 + (IMP)instanceMethodForSelector:(SEL)selector {
@@ -255,6 +260,11 @@ forUndefinedKey:(id)key { // NSString*
 
 - (bool)respondsToSelector:(SEL)selector {
     env.objc.object_has_method(&env.mem, this, selector)
+}
+
+- (bool)conformsToProtocol:(ConstVoidPtr)protocol {
+    let class: Class = ObjC::read_isa(this, &env.mem);
+    env.objc.class_conforms_to_protocol(&env.mem, class, protocol)
 }
 
 - (IMP)methodForSelector:(SEL)selector {
