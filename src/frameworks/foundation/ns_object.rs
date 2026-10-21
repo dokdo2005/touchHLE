@@ -272,11 +272,6 @@ forUndefinedKey:(id)key { // NSString*
     msg_send_no_type_checking(env, (this, sel))
 }
 
-- (id)performSelector:(SEL)sel {
-    assert!(!sel.is_null());
-    msg_send_no_type_checking(env, (this, sel))
-}
-
 - (id)performSelector:(SEL)sel
            withObject:(id)o1 {
     assert!(!sel.is_null());
