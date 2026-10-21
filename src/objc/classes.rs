@@ -132,7 +132,6 @@ struct category_t {
 }
 unsafe impl SafeRead for category_t {}
 
-
 /// Check the guest's 32-bit Objective-C protocol metadata, including protocols
 /// adopted by other protocols. The layout begins with a u32 count followed by
 /// that many pointers to protocol_t (isa, name, inherited protocols, ...).
@@ -1032,6 +1031,11 @@ impl ObjC {
                 if protocol_list_conforms_to(mem, list, wanted, &mut visited) {
                     return true;
                 }
+            }
+            // NSObject itself adopts the NSObject protocol even when it is
+            // supplied by the host rather than the guest binary.
+            if wanted == "NSObject" && host_class.name == "NSObject" {
+                return true;
             }
             class = host_class.superclass;
         }
