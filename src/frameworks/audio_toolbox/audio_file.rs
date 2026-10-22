@@ -8,11 +8,11 @@
 use crate::abi::{CallFromHost, GuestFunction};
 use crate::audio; // Keep this module namespaced to avoid confusion
 use crate::dyld::{export_c_func, FunctionExports};
-use crate::fs::{GuestPath, GuestPathBuf};
 use crate::frameworks::carbon_core::{eofErr, OSStatus};
 use crate::frameworks::core_audio_types::{debug_fourcc, fourcc, AudioStreamBasicDescription};
 use crate::frameworks::core_foundation::cf_url::CFURLRef;
 use crate::frameworks::foundation::ns_url::to_rust_path;
+use crate::fs::{GuestPath, GuestPathBuf};
 use crate::mem::{guest_size_of, GuestUSize, MutPtr, MutVoidPtr, SafeRead};
 use crate::Environment;
 use std::collections::HashMap;
@@ -123,7 +123,11 @@ pub fn AudioFileOpenURL(
         None
     };
     let path_to_open: &GuestPath = if let Some(ref candidate) = fallback_path {
-        log!("FlyMe2theMoon audio path fallback: {:?} -> {:?}", path, candidate);
+        log!(
+            "FlyMe2theMoon audio path fallback: {:?} -> {:?}",
+            path,
+            candidate
+        );
         candidate.as_ref()
     } else {
         path.as_ref()
