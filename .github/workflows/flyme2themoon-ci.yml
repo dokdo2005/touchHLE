@@ -4,11 +4,13 @@ on:
   push:
     branches:
       - flyme2themoon
-      - 'fix/**'
-      - 'feat/**'
   pull_request:
     branches:
       - flyme2themoon
+
+concurrency:
+  group: compatibility-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
