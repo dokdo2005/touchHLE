@@ -6,8 +6,8 @@
 //! `UIApplication` and `UIApplicationMain`.
 
 use super::ui_device::*;
-use crate::frameworks::core_graphics::{CGPoint, CGRect, CGSize};
 use crate::dyld::{export_c_func, ConstantExports, FunctionExports, HostConstant};
+use crate::frameworks::core_graphics::{CGPoint, CGRect, CGSize};
 use crate::frameworks::foundation::ns_string::{from_rust_string, get_static_str};
 use crate::frameworks::foundation::{ns_array, ns_string, NSInteger, NSUInteger};
 use crate::mem::MutPtr;
