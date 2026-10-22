@@ -27,6 +27,10 @@ jobs:
 
       - name: Install native build dependencies
         run: |
+          # The hosted runner may contain a Microsoft apt source that returns
+          # HTTP 403. It is unrelated to our Ubuntu build dependencies.
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ |
+            while IFS= read -r source; do sudo mv "$source" "$source.disabled"; done
           sudo apt-get update
           sudo apt-get install -y             build-essential clang cmake pkg-config libboost-dev             libasound2-dev libudev-dev libgl1-mesa-dev libopenal-dev libsdl2-dev
 
