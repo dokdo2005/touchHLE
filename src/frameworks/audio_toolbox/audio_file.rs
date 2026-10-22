@@ -537,16 +537,16 @@ mod flyme2themoon_audio_path_tests {
 
     #[test]
     fn only_append_wav_to_extensionless_audio_paths() {
-        let stem = GuestPathBuf::from("7-4");
+        let stem = GuestPathBuf::from(String::from("7-4"));
         let candidate = flyme2themoon_wav_candidate(stem.as_ref()).unwrap();
         assert_eq!(candidate.as_str(), "7-4.wav");
 
-        let nested = GuestPathBuf::from("/bundle/106-1");
+        let nested = GuestPathBuf::from(String::from("/bundle/106-1"));
         let candidate = flyme2themoon_wav_candidate(nested.as_ref()).unwrap();
         assert_eq!(candidate.as_str(), "/bundle/106-1.wav");
 
         for original in ["7-4.wav", "/bundle/track.mp3", "/bundle/", ""] {
-            let path = GuestPathBuf::from(original);
+            let path = GuestPathBuf::from(original.to_string());
             assert!(flyme2themoon_wav_candidate(path.as_ref()).is_none());
         }
     }
