@@ -26,8 +26,125 @@ use crate::mem::{guest_size_of, ConstPtr, MutPtr, MutVoidPtr, SafeRead};
 use crate::objc::classes::InitializationStatus;
 use crate::Environment;
 use std::any::TypeId;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
+
+// Guest Cocos2d classes store their node coordinates/visibility in ivars.
+// Discover offsets via the loaded Objective-C metadata instead of assuming a
+// specific build's Cocos2d struct layout.
+fn flyme_guest_ivar_offset(env: &Environment, mut class: Class, ivar: &str) -> Option<u32> {
+    while class != nil {
+        let host = env.objc.get_host_object(class)?;
+        let host = host.as_any().downcast_ref::<super::ClassHostObject>()?;
+        if let Some(&(offset_ptr, _)) = host.ivars.get(ivar) {
+            return if offset_ptr.is_null() {
+                None
+            } else {
+                Some(env.mem.read(offset_ptr))
+            };
+        }
+        class = host.superclass;
+    }
+    None
+}
+
+fn flyme_guest_ivar<T: SafeRead>(
+    env: &Environment,
+    class: Class,
+    receiver: id,
+    ivar: &str,
+) -> Option<T> {
+    let offset = flyme_guest_ivar_offset(env, class, ivar)?;
+    let address = receiver.to_bits().checked_add(offset)?;
+    Some(env.mem.read(ConstPtr::<T>::from_bits(address)))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FlymeNodeSnapshot {
+    position: (u32, u32),
+    size: (u32, u32),
+    visible: u8,
+    parent: u32,
+    opacity: Option<u8>,
+    normal_image: Option<u32>,
+    selected_image: Option<u32>,
+}
+
+static FLYME_NODE_SNAPSHOTS: OnceLock<Mutex<HashMap<u32, FlymeNodeSnapshot>>> = OnceLock::new();
+static FLYME_NODE_STATE_CHANGES: AtomicUsize = AtomicUsize::new(0);
+
+fn trace_flyme_menu_node(env: &Environment, class: Class, receiver: id, name: &str) {
+    let base = receiver.to_bits();
+    let parent: u32 = match flyme_guest_ivar(env, class, receiver, "parent_") {
+        Some(value) => value,
+        None => return,
+    };
+
+    let is_menu_sprite = if name == "CCSprite" && parent != 0 {
+        let parent_object: id = MutPtr::from_bits(parent);
+        let parent_class = ObjC::read_isa(parent_object, &env.mem);
+        env.objc.try_get_class_name(parent_class) == Some("CCMenuItemSprite")
+    } else {
+        false
+    };
+    if !matches!(name, "CCMenu" | "CCMenuItemSprite" | "MainMenuLayer")
+        && !is_menu_sprite
+    {
+        return;
+    }
+
+    let Some(position) = flyme_guest_ivar_offset(env, class, "position_") else {
+        return;
+    };
+    let Some(content_size) = flyme_guest_ivar_offset(env, class, "contentSize_") else {
+        return;
+    };
+    let px: f32 = env.mem.read(ConstPtr::from_bits(base + position));
+    let py: f32 = env.mem.read(ConstPtr::from_bits(base + position + 4));
+    let width: f32 = env.mem.read(ConstPtr::from_bits(base + content_size));
+    let height: f32 = env.mem.read(ConstPtr::from_bits(base + content_size + 4));
+    let visible = flyme_guest_ivar::<u8>(env, class, receiver, "visible_").unwrap_or(0);
+    let snapshot = FlymeNodeSnapshot {
+        position: (px.to_bits(), py.to_bits()),
+        size: (width.to_bits(), height.to_bits()),
+        visible,
+        parent,
+        opacity: flyme_guest_ivar(env, class, receiver, "opacity_"),
+        normal_image: flyme_guest_ivar(env, class, receiver, "normalImage_"),
+        selected_image: flyme_guest_ivar(env, class, receiver, "selectedImage_"),
+    };
+    let snapshots = FLYME_NODE_SNAPSHOTS.get_or_init(|| Mutex::new(HashMap::new()));
+    let changed = {
+        let mut prior = snapshots.lock().unwrap();
+        if prior.get(&base) == Some(&snapshot) {
+            false
+        } else {
+            prior.insert(base, snapshot);
+            true
+        }
+    };
+    if changed {
+        let n = FLYME_NODE_STATE_CHANGES.fetch_add(1, Ordering::Relaxed);
+        if n < 250 || n % 100 == 0 {
+            log!(
+                "FLYME_NODE_TRACE change={} class={} object={:?} visible={} position=({:.1},{:.1}) size=({:.1},{:.1}) parent={:#x} opacity={:?} normal={:?} selected={:?}",
+                n,
+                name,
+                receiver,
+                visible,
+                px,
+                py,
+                width,
+                height,
+                parent,
+                snapshot.opacity,
+                snapshot.normal_image,
+                snapshot.selected_image
+            );
+        }
+    }
+}
 
 // Opt-in FlyMe2theMoon diagnostic mode. Objective-C dispatch is a hot path,
 // so the environment toggle is evaluated once, not once per guest message.
@@ -91,6 +208,10 @@ fn trace_flyme_scene_message(env: &Environment, class: Class, receiver: id, sele
         || name.starts_with("EAGL");
     if !is_game_object {
         return;
+    }
+
+    if sel == "draw" {
+        trace_flyme_menu_node(env, class, receiver, name);
     }
 
     // Avoid millions of log lines if the game draws at 60 FPS for a long time.
