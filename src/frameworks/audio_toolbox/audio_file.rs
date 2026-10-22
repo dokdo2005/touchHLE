@@ -560,7 +560,10 @@ mod flyme2themoon_audio_path_tests {
         ] {
             let path = GuestPathBuf::from(stem.to_string());
             let candidate = flyme2themoon_wav_candidate(path.as_ref(), bundle.as_ref()).unwrap();
-            assert_eq!(candidate.as_str(), format!("{}/{}", bundle.as_str(), expected));
+            assert_eq!(
+                candidate.as_str(),
+                format!("{}/{}", bundle.as_str(), expected)
+            );
         }
     }
 
