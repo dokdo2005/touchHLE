@@ -52,3 +52,6 @@ jobs:
 
       - name: Test FlyMe2theMoon WAV path fallback
         run: cargo test --lib flyme2themoon_audio_path_tests
+
+      - name: Test Extended Audio File frame count
+        run: cargo test --lib file_length_frames_tests
