@@ -23,7 +23,12 @@ use crate::Environment;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
+
+static FLYME_PRESENT_TRACE_ENABLED: OnceLock<bool> = OnceLock::new();
+static FLYME_PRESENT_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 // These are used by the EAGLDrawable protocol implemented by CAEAGLayer.
 // Since these have the ABI of constant symbols rather than literal constants,
@@ -263,6 +268,20 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 - (bool)presentRenderbuffer:(NSUInteger)target {
     assert!(target == gles11::RENDERBUFFER_OES);
+
+    if *FLYME_PRESENT_TRACE_ENABLED
+        .get_or_init(|| std::env::var_os("TOUCHHLE_FLYME_SCENE_TRACE").is_some())
+        && env.bundle.bundle_identifier() == "com.mihoyo.flyme2themoon"
+    {
+        let n = FLYME_PRESENT_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        if n == 1 || n % 120 == 0 {
+            log!(
+                "FLYME_FRAME_TRACE presentRenderbuffer attempts={} context={:?}",
+                n,
+                this
+            );
+        }
+    }
 
     // The presented frame should be displayed ASAP, but the next one must be
     // delayed, so this needs to be checked before returning.

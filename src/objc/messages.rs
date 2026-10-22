@@ -26,6 +26,85 @@ use crate::mem::{guest_size_of, ConstPtr, MutPtr, MutVoidPtr, SafeRead};
 use crate::objc::classes::InitializationStatus;
 use crate::Environment;
 use std::any::TypeId;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::OnceLock;
+
+// Opt-in FlyMe2theMoon diagnostic mode. Objective-C dispatch is a hot path,
+// so the environment toggle is evaluated once, not once per guest message.
+static FLYME_SCENE_TRACE_ENABLED: OnceLock<bool> = OnceLock::new();
+static FLYME_SCENE_MESSAGE_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+fn trace_flyme_scene_message(env: &Environment, class: Class, receiver: id, selector: SEL) {
+    if !*FLYME_SCENE_TRACE_ENABLED
+        .get_or_init(|| std::env::var_os("TOUCHHLE_FLYME_SCENE_TRACE").is_some())
+        || env.bundle.bundle_identifier() != "com.mihoyo.flyme2themoon"
+    {
+        return;
+    }
+
+    let sel = selector.as_str(&env.mem);
+    let interesting_selector = matches!(
+        sel,
+        "runWithScene:"
+            | "replaceScene:"
+            | "pushScene:"
+            | "popScene"
+            | "setNextScene"
+            | "drawScene"
+            | "mainLoop"
+            | "mainLoop:"
+            | "onEnter"
+            | "onExit"
+            | "onEnterTransitionDidFinish"
+            | "onExitTransitionDidStart"
+            | "visit"
+            | "draw"
+            | "update:"
+            | "tick:"
+            | "step:"
+            | "schedule:"
+            | "scheduleUpdate"
+            | "scheduleUpdateWithPriority:"
+            | "startAnimation"
+            | "stopAnimation"
+            | "ccTouchBegan:withEvent:"
+            | "ccTouchEnded:withEvent:"
+            | "ccTouchesBegan:withEvent:"
+            | "ccTouchesEnded:withEvent:"
+            | "touchesBegan:withEvent:"
+            | "touchesEnded:withEvent:"
+            | "setIsTouchEnabled:"
+            | "setTouchEnabled:"
+    );
+    if !interesting_selector {
+        return;
+    }
+
+    let Some(name) = env.objc.try_get_class_name(class) else {
+        return;
+    };
+    // Include game-specific scene classes, not unrelated UIKit calls.
+    let is_game_object = name.starts_with("CC")
+        || name.starts_with("MainMenu")
+        || name.starts_with("Loading")
+        || name.starts_with("GameScene")
+        || name.starts_with("EAGL");
+    if !is_game_object {
+        return;
+    }
+
+    // Avoid millions of log lines if the game draws at 60 FPS for a long time.
+    let n = FLYME_SCENE_MESSAGE_COUNT.fetch_add(1, Ordering::Relaxed);
+    if n < 400 || n % 300 == 0 {
+        log!(
+            "FLYME_SCENE_TRACE event={} class={} receiver={:?} selector={}",
+            n,
+            name,
+            receiver,
+            sel
+        );
+    }
+}
 
 pub(super) struct ThreadInitializer {
     mutex: MutPtr<pthread_mutex_t>,
@@ -193,6 +272,7 @@ fn objc_msgSend_inner(
 
     let orig_class = super2.unwrap_or_else(|| ObjC::read_isa(receiver, &env.mem));
     assert!(orig_class != nil);
+    trace_flyme_scene_message(env, orig_class, receiver, selector);
     if !skip_initialize {
         maybe_initialize_class(env, receiver);
     }
