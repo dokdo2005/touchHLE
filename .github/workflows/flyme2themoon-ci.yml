@@ -1,9 +1,11 @@
-name: FlyMe2theMoon runtime validation
+name: FlyMe2theMoon compatibility checks
 
 on:
   push:
     branches:
-      - feat/objc-protocol-conformance
+      - flyme2themoon
+      - 'fix/**'
+      - 'feat/**'
   pull_request:
     branches:
       - flyme2themoon
@@ -12,26 +14,35 @@ permissions:
   contents: read
 
 jobs:
-  macos-check:
-    runs-on: macos-15
+  linux-build-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
     steps:
-      - name: Checkout fork branch
+      - name: Checkout touchHLE fork and native submodules
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
       - name: Install native build dependencies
-        run: brew install boost cmake
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y             build-essential clang cmake pkg-config libboost-dev             libasound2-dev libudev-dev libgl1-mesa-dev libopenal-dev libsdl2-dev
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
 
       - name: Check Rust formatting
         run: cargo fmt --all -- --check
 
-      - name: Check compilation
-        env:
-          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
-        run: cargo check
+      - name: Check Linux compilation
+        run: cargo check --lib
 
       - name: Test Objective-C protocol parser
-        env:
-          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
         run: cargo test --lib protocol_tests::detects_direct_inherited_and_unrelated_protocols
+
+      - name: Test FlyMe2theMoon WAV path fallback
+        run: cargo test --lib flyme2themoon_audio_path_tests::only_append_wav_to_extensionless_audio_paths
