@@ -1253,22 +1253,37 @@ mod protocol_tests {
 
         let list = Ptr::from_bits(0x1220);
         assert!(protocol_list_conforms_to(
-            &mem, list, "Parent", &mut HashSet::new()
+            &mem,
+            list,
+            "Parent",
+            &mut HashSet::new()
         ));
         assert!(protocol_list_conforms_to(
-            &mem, list, "Child", &mut HashSet::new()
+            &mem,
+            list,
+            "Child",
+            &mut HashSet::new()
         ));
         assert!(!protocol_list_conforms_to(
-            &mem, list, "Unrelated", &mut HashSet::new()
+            &mem,
+            list,
+            "Unrelated",
+            &mut HashSet::new()
         ));
         assert!(!protocol_list_conforms_to(
-            &mem, Ptr::null(), "Child", &mut HashSet::new()
+            &mem,
+            Ptr::null(),
+            "Child",
+            &mut HashSet::new()
         ));
 
         // Malformed cycles must not lead to unbounded recursion.
         word(&mut mem, 0x1108, 0x1220);
         assert!(!protocol_list_conforms_to(
-            &mem, list, "Unrelated", &mut HashSet::new()
+            &mem,
+            list,
+            "Unrelated",
+            &mut HashSet::new()
         ));
     }
 }

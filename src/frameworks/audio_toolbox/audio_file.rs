@@ -12,6 +12,7 @@ use crate::frameworks::carbon_core::{eofErr, OSStatus};
 use crate::frameworks::core_audio_types::{debug_fourcc, fourcc, AudioStreamBasicDescription};
 use crate::frameworks::core_foundation::cf_url::CFURLRef;
 use crate::frameworks::foundation::ns_url::to_rust_path;
+use crate::fs::{GuestPath, GuestPathBuf};
 use crate::mem::{guest_size_of, GuestUSize, MutPtr, MutVoidPtr, SafeRead};
 use crate::Environment;
 use std::collections::HashMap;
@@ -73,6 +74,17 @@ const kAudioFilePropertyChannelLayout: AudioFilePropertyID = fourcc(b"cmap");
 const kAudioFilePropertyEstimatedDuration: AudioFilePropertyID = fourcc(b"edur");
 const kAudioFilePropertyPacketTableInfo: AudioFilePropertyID = fourcc(b"pnfo");
 
+/// FlyMe2theMoon's Cocos2d audio loader sometimes supplies a file URL
+/// containing only the stem (e.g. "7-4"), while the bundle stores "7-4.wav".
+/// Keep this workaround separate from normal AudioFileOpenURL semantics.
+fn flyme2themoon_wav_candidate(path: &GuestPath) -> Option<GuestPathBuf> {
+    let filename = path.as_str().rsplit('/').next()?;
+    if filename.is_empty() || filename.contains('.') {
+        return None;
+    }
+    Some(GuestPathBuf::from(format!("{}.wav", path.as_str())))
+}
+
 pub fn AudioFileOpenURL(
     env: &mut Environment,
     in_file_ref: CFURLRef,
@@ -99,7 +111,28 @@ pub fn AudioFileOpenURL(
     }
 
     let path = to_rust_path(env, in_file_ref);
-    let audio_file = match audio::AudioFile::open_for_reading(path, &env.fs) {
+
+    // The app's sound effect URLs can omit ".wav" even though only the
+    // suffixed filename exists in its bundle. Resolve that mismatch only
+    // for FlyMe2theMoon; do not reinterpret URLs belonging to other apps.
+    let fallback_path = if env.bundle.bundle_identifier() == "com.mihoyo.flyme2themoon"
+        && !env.fs.is_file(path.as_ref())
+    {
+        flyme2themoon_wav_candidate(path.as_ref()).filter(|candidate| env.fs.is_file(candidate))
+    } else {
+        None
+    };
+    let path_to_open: &GuestPath = if let Some(ref candidate) = fallback_path {
+        log!(
+            "FlyMe2theMoon audio path fallback: {:?} -> {:?}",
+            path,
+            candidate
+        );
+        candidate.as_ref()
+    } else {
+        path.as_ref()
+    };
+    let audio_file = match audio::AudioFile::open_for_reading(path_to_open, &env.fs) {
         Ok(audio_file) => audio_file,
         Err(error) => {
             log!(
@@ -499,4 +532,26 @@ pub(crate) fn guest_audio_file_read_from_vec(
         .insert(guest_audio_file, host_object);
 
     Ok(guest_audio_file)
+}
+
+#[cfg(test)]
+mod flyme2themoon_audio_path_tests {
+    use super::flyme2themoon_wav_candidate;
+    use crate::fs::GuestPathBuf;
+
+    #[test]
+    fn only_append_wav_to_extensionless_audio_paths() {
+        let stem = GuestPathBuf::from(String::from("7-4"));
+        let candidate = flyme2themoon_wav_candidate(stem.as_ref()).unwrap();
+        assert_eq!(candidate.as_str(), "7-4.wav");
+
+        let nested = GuestPathBuf::from(String::from("/bundle/106-1"));
+        let candidate = flyme2themoon_wav_candidate(nested.as_ref()).unwrap();
+        assert_eq!(candidate.as_str(), "/bundle/106-1.wav");
+
+        for original in ["7-4.wav", "/bundle/track.mp3", "/bundle/", ""] {
+            let path = GuestPathBuf::from(original.to_string());
+            assert!(flyme2themoon_wav_candidate(path.as_ref()).is_none());
+        }
+    }
 }
