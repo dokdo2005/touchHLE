@@ -59,8 +59,7 @@ fn CFStringAppendCharacters(
         .collect();
 
     // UTF-16을 Rust 문자열로 변환
-    let text = String::from_utf16(&utf16)
-        .expect("CFStringAppendCharacters: invalid UTF-16");
+    let text = String::from_utf16(&utf16).expect("CFStringAppendCharacters: invalid UTF-16");
 
     // NSString 객체 생성
     let appended_string = ns_string::from_rust_string(env, text);
