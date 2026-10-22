@@ -51,4 +51,4 @@ jobs:
         run: cargo test --lib protocol_tests::detects_direct_inherited_and_unrelated_protocols
 
       - name: Test FlyMe2theMoon WAV path fallback
-        run: cargo test --lib flyme2themoon_audio_path_tests::only_append_wav_to_extensionless_audio_paths
+        run: cargo test --lib flyme2themoon_audio_path_tests
