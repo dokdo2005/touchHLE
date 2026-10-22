@@ -55,6 +55,15 @@ type ExtAudioFileRef = MutPtr<OpaqueExtAudioFile>;
 type ExtAudioFilePropertyID = u32;
 const kExtAudioFileProperty_FileDataFormat: ExtAudioFilePropertyID = fourcc(b"ffmt");
 const kExtAudioFileProperty_ClientDataFormat: ExtAudioFilePropertyID = fourcc(b"cfmt");
+const kExtAudioFileProperty_FileLengthFrames: ExtAudioFilePropertyID = fourcc(b"#frm");
+
+/// An audio packet can contain more than one sample frame. Return the frame
+/// count rather than the packet count, using the Core Audio SInt64 type.
+fn file_length_frames(packet_count: u64, frames_per_packet: u32) -> Option<i64> {
+    packet_count
+        .checked_mul(u64::from(frames_per_packet))
+        .and_then(|frames| i64::try_from(frames).ok())
+}
 
 fn ExtAudioFileOpenURL(
     env: &mut Environment,
@@ -110,6 +119,39 @@ fn ExtAudioFileGetProperty(
     out_property_data: MutVoidPtr,
 ) -> OSStatus {
     return_if_null!(in_ext_audio_file);
+
+    if in_property_id == kExtAudioFileProperty_FileLengthFrames {
+        let required_size = guest_size_of::<i64>();
+        if env.mem.read(io_property_data_size) != required_size {
+            log!("Warning: ExtAudioFileGetProperty(#frm) failed: invalid property size");
+            return kAudioFileBadPropertySizeError;
+        }
+
+        let host_object = env
+            .framework_state
+            .audio_toolbox
+            .extended_audio_file
+            .extended_audio_files
+            .get(&in_ext_audio_file)
+            .unwrap();
+        let audio_file = &env
+            .framework_state
+            .audio_toolbox
+            .audio_file
+            .audio_files
+            .get(&host_object.guest_audio_file)
+            .unwrap()
+            .audio_file;
+        let frames_per_packet = audio_file.audio_description().frames_per_packet;
+        let Some(frame_count) = file_length_frames(audio_file.packet_count(), frames_per_packet)
+        else {
+            log!("Warning: ExtAudioFileGetProperty(#frm) frame count overflows SInt64");
+            return -66566; // kExtAudioFileError_InvalidDataFormat
+        };
+
+        env.mem.write(out_property_data.cast(), frame_count);
+        return 0; // success
+    }
 
     let audio_file_property_id = match in_property_id {
         kExtAudioFileProperty_FileDataFormat => kAudioFilePropertyDataFormat,
@@ -301,3 +343,30 @@ pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(ExtAudioFileRead(_, _, _)),
     export_c_func!(ExtAudioFileDispose(_)),
 ];
+
+#[cfg(test)]
+mod file_length_frames_tests {
+    use super::{file_length_frames, kExtAudioFileProperty_FileLengthFrames};
+    use crate::frameworks::core_audio_types::fourcc;
+
+    #[test]
+    fn matches_core_audio_property_id() {
+        assert_eq!(kExtAudioFileProperty_FileLengthFrames, fourcc(b"#frm"));
+    }
+
+    #[test]
+    fn counts_sample_frames_not_channels_or_bytes() {
+        // Stereo audio: 44,100 PCM packets represent 44,100 sample frames,
+        // not 88,200 interleaved samples.
+        assert_eq!(file_length_frames(44_100, 1), Some(44_100));
+        assert_eq!(file_length_frames(44_100, 2), Some(88_200));
+        assert_eq!(file_length_frames(0, 1), Some(0));
+    }
+
+    #[test]
+    fn rejects_values_outside_core_audio_sint64() {
+        assert_eq!(file_length_frames(u64::MAX, 2), None);
+        assert_eq!(file_length_frames(i64::MAX as u64, 1), Some(i64::MAX));
+        assert_eq!(file_length_frames(i64::MAX as u64 + 1, 1), None);
+    }
+}

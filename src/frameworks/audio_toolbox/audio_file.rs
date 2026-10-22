@@ -76,13 +76,20 @@ const kAudioFilePropertyPacketTableInfo: AudioFilePropertyID = fourcc(b"pnfo");
 
 /// FlyMe2theMoon's Cocos2d audio loader sometimes supplies a file URL
 /// containing only the stem (e.g. "7-4"), while the bundle stores "7-4.wav".
+/// Relative file URLs are interpreted against the guest root directory by the
+/// touchHLE filesystem, not against the app bundle. Look up the actual bundle
+/// resource rather than just appending ".wav" to a root-relative filename.
 /// Keep this workaround separate from normal AudioFileOpenURL semantics.
-fn flyme2themoon_wav_candidate(path: &GuestPath) -> Option<GuestPathBuf> {
+fn flyme2themoon_wav_candidate(path: &GuestPath, bundle: &GuestPath) -> Option<GuestPathBuf> {
     let filename = path.as_str().rsplit('/').next()?;
     if filename.is_empty() || filename.contains('.') {
         return None;
     }
-    Some(GuestPathBuf::from(format!("{}.wav", path.as_str())))
+    if path.as_str().starts_with('/') {
+        Some(GuestPathBuf::from(format!("{}.wav", path.as_str())))
+    } else {
+        Some(bundle.join(format!("{}.wav", path.as_str())))
+    }
 }
 
 pub fn AudioFileOpenURL(
@@ -118,7 +125,8 @@ pub fn AudioFileOpenURL(
     let fallback_path = if env.bundle.bundle_identifier() == "com.mihoyo.flyme2themoon"
         && !env.fs.is_file(path.as_ref())
     {
-        flyme2themoon_wav_candidate(path.as_ref()).filter(|candidate| env.fs.is_file(candidate))
+        flyme2themoon_wav_candidate(path.as_ref(), env.bundle.bundle_path())
+            .filter(|candidate| env.fs.is_file(candidate))
     } else {
         None
     };
@@ -540,18 +548,35 @@ mod flyme2themoon_audio_path_tests {
     use crate::fs::GuestPathBuf;
 
     #[test]
-    fn only_append_wav_to_extensionless_audio_paths() {
-        let stem = GuestPathBuf::from(String::from("7-4"));
-        let candidate = flyme2themoon_wav_candidate(stem.as_ref()).unwrap();
-        assert_eq!(candidate.as_str(), "7-4.wav");
+    fn resolve_audio_stems_against_the_bundle() {
+        let bundle = GuestPathBuf::from(String::from(
+            "/var/mobile/Applications/00000000-0000-0000-0000-000000000000/Fly2theMoon.app",
+        ));
+        for (stem, expected) in [
+            ("7-4", "7-4.wav"),
+            ("6-3", "6-3.wav"),
+            ("106-1", "106-1.wav"),
+            ("music/7-4", "music/7-4.wav"),
+        ] {
+            let path = GuestPathBuf::from(stem.to_string());
+            let candidate = flyme2themoon_wav_candidate(path.as_ref(), bundle.as_ref()).unwrap();
+            assert_eq!(
+                candidate.as_str(),
+                format!("{}/{}", bundle.as_str(), expected)
+            );
+        }
+    }
 
-        let nested = GuestPathBuf::from(String::from("/bundle/106-1"));
-        let candidate = flyme2themoon_wav_candidate(nested.as_ref()).unwrap();
-        assert_eq!(candidate.as_str(), "/bundle/106-1.wav");
+    #[test]
+    fn avoid_rewriting_absolute_urls_and_existing_extensions() {
+        let bundle = GuestPathBuf::from(String::from("/Applications/Fly2theMoon.app"));
+        let absolute = GuestPathBuf::from(String::from("/somewhere/7-4"));
+        let resolved = flyme2themoon_wav_candidate(absolute.as_ref(), bundle.as_ref()).unwrap();
+        assert_eq!(resolved.as_str(), "/somewhere/7-4.wav");
 
-        for original in ["7-4.wav", "/bundle/track.mp3", "/bundle/", ""] {
+        for original in ["7-4.wav", "/somewhere/track.mp3", "/bundle/", ""] {
             let path = GuestPathBuf::from(original.to_string());
-            assert!(flyme2themoon_wav_candidate(path.as_ref()).is_none());
+            assert!(flyme2themoon_wav_candidate(path.as_ref(), bundle.as_ref()).is_none());
         }
     }
 }
