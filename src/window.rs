@@ -552,6 +552,9 @@ impl Window {
                 } => {
                     let coords = transform_input_coords(self, (x as f32, y as f32), false);
                     log_dbg!("MouseButtonDown x {}, y {}, coords {:?}", x, y, coords);
+                    if std::env::var_os("TOUCHHLE_FLYME_SCENE_TRACE").is_some() {
+                        log!("FLYME_INPUT_TRACE SDL left mouse DOWN ({}, {}) -> {:?}", x, y, coords);
+                    }
                     Event::TouchesDown(HashMap::from([(FingerId::Mouse, coords)]))
                 }
                 E::MouseMotion {
@@ -569,6 +572,9 @@ impl Window {
                 } => {
                     let coords = transform_input_coords(self, (x as f32, y as f32), false);
                     log_dbg!("MouseButtonUp x {}, y {}, coords {:?}", x, y, coords);
+                    if std::env::var_os("TOUCHHLE_FLYME_SCENE_TRACE").is_some() {
+                        log!("FLYME_INPUT_TRACE SDL left mouse UP ({}, {}) -> {:?}", x, y, coords);
+                    }
                     Event::TouchesUp(HashMap::from([(FingerId::Mouse, coords)]))
                 }
                 E::ControllerDeviceAdded { which, .. } => {
