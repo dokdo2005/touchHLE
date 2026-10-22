@@ -19,7 +19,7 @@ use crate::mach_o::MachO;
 use crate::mem::{guest_size_of, ConstPtr, ConstVoidPtr, GuestUSize, Mem, MutPtr, Ptr, SafeRead};
 use crate::Environment;
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Generic pointer to an Objective-C class or metaclass.
 ///
@@ -40,6 +40,8 @@ pub(super) struct ClassHostObject {
     pub(super) superclass: Class,
     pub(super) methods: HashMap<SEL, IMP>,
     pub(super) guest_method_signatures: HashMap<SEL, ConstPtr<u8>>,
+    /// Protocol lists declared on guest classes or categories.
+    pub(super) protocol_lists: Vec<ConstVoidPtr>,
     /// Maps ivar name to a tuple of an offset (as pointer) and an alignment.
     /// (Alignment is used during ivar reconciliation.)
     pub(super) ivars: HashMap<String, (ConstPtr<GuestUSize>, u32)>,
@@ -109,7 +111,7 @@ struct class_rw_t {
     _reserved: u32,
     name: ConstPtr<u8>,
     base_methods: ConstPtr<method_list_t>,
-    _base_protocols: ConstVoidPtr, // protocol list (TODO)
+    base_protocols: ConstVoidPtr, // protocol list
     ivars: ConstPtr<ivar_list_t>,
     _weak_ivar_layout: u32,
     _base_properties: ConstVoidPtr, // property list (TODO)
@@ -125,10 +127,44 @@ struct category_t {
     class: Class,
     instance_methods: ConstPtr<method_list_t>,
     class_methods: ConstPtr<method_list_t>,
-    _protocols: ConstVoidPtr,     // protocol list (TODO)
+    protocols: ConstVoidPtr,      // protocol list
     _property_list: ConstVoidPtr, // property list (TODO)
 }
 unsafe impl SafeRead for category_t {}
+
+/// Check the guest's 32-bit Objective-C protocol metadata, including protocols
+/// adopted by other protocols. The layout begins with a u32 count followed by
+/// that many pointers to protocol_t (isa, name, inherited protocols, ...).
+fn protocol_list_conforms_to(
+    mem: &Mem,
+    list: ConstVoidPtr,
+    wanted: &str,
+    visited: &mut HashSet<ConstVoidPtr>,
+) -> bool {
+    if list.is_null() {
+        return false;
+    }
+    let list_ptr: ConstPtr<GuestUSize> = list.cast();
+    let count = mem.read(list_ptr);
+    let entries: ConstPtr<ConstVoidPtr> = (list_ptr + 1).cast();
+
+    for index in 0..count {
+        let protocol = mem.read(entries + index);
+        if protocol.is_null() || !visited.insert(protocol) {
+            continue;
+        }
+        let fields: ConstPtr<ConstVoidPtr> = protocol.cast();
+        let name: ConstPtr<u8> = mem.read(fields + 1).cast();
+        if !name.is_null() && mem.cstr_at_utf8(name).ok() == Some(wanted) {
+            return true;
+        }
+        let inherited = mem.read(fields + 2);
+        if protocol_list_conforms_to(mem, inherited, wanted, visited) {
+            return true;
+        }
+    }
+    false
+}
 
 #[repr(C, packed)]
 pub struct objc_property {
@@ -390,6 +426,7 @@ impl ClassHostObject {
                 }),
             ),
             guest_method_signatures: HashMap::default(),
+            protocol_lists: Vec::new(),
             // maybe this should be 0 for NSObject? does it matter?
             instance_start: size,
             instance_size: size,
@@ -407,6 +444,7 @@ impl ClassHostObject {
             instance_size,
             name,
             base_methods,
+            base_protocols,
             ivars,
             ..
         } = mem.read(data);
@@ -419,6 +457,11 @@ impl ClassHostObject {
             superclass,
             methods: HashMap::new(),
             guest_method_signatures: HashMap::new(),
+            protocol_lists: if base_protocols.is_null() {
+                Vec::new()
+            } else {
+                vec![base_protocols]
+            },
             instance_start,
             instance_size,
             ivars: HashMap::new(),
@@ -891,6 +934,19 @@ impl ObjC {
             let class = data.class;
             let metaclass = Self::read_isa(class, mem);
 
+            // Categories can adopt protocols even when they declare no methods.
+            if !data.protocols.is_null()
+                && self
+                    .get_host_object(class)
+                    .unwrap()
+                    .as_any()
+                    .is::<ClassHostObject>()
+            {
+                self.borrow_mut::<ClassHostObject>(class)
+                    .protocol_lists
+                    .push(data.protocols);
+            }
+
             for (class, methods) in [
                 (class, data.instance_methods),
                 (metaclass, data.class_methods),
@@ -914,6 +970,7 @@ impl ObjC {
                         superclass: nil,
                         methods: Default::default(),
                         guest_method_signatures: Default::default(),
+                        protocol_lists: Default::default(),
                         instance_start: Default::default(),
                         instance_size: Default::default(),
                         ivars: Default::default(),
@@ -941,6 +998,48 @@ impl ObjC {
                 *self.borrow_mut::<ClassHostObject>(class) = host_obj;
             }
         }
+    }
+
+    /// Return whether a class declares (or inherits) a guest Objective-C protocol.
+    /// Host-only classes currently do not provide protocol metadata.
+    pub fn class_conforms_to_protocol(
+        &self,
+        mem: &Mem,
+        mut class: Class,
+        protocol: ConstVoidPtr,
+    ) -> bool {
+        if protocol.is_null() {
+            return false;
+        }
+        let fields: ConstPtr<ConstVoidPtr> = protocol.cast();
+        let name: ConstPtr<u8> = mem.read(fields + 1).cast();
+        if name.is_null() {
+            return false;
+        }
+        let Ok(wanted) = mem.cstr_at_utf8(name) else {
+            return false;
+        };
+        let mut visited = HashSet::new();
+        while class != nil {
+            let Some(host_class) = self
+                .get_host_object(class)
+                .and_then(|object| object.as_any().downcast_ref::<ClassHostObject>())
+            else {
+                return false;
+            };
+            for &list in &host_class.protocol_lists {
+                if protocol_list_conforms_to(mem, list, wanted, &mut visited) {
+                    return true;
+                }
+            }
+            // NSObject itself adopts the NSObject protocol even when it is
+            // supplied by the host rather than the guest binary.
+            if wanted == "NSObject" && host_class.name == "NSObject" {
+                return true;
+            }
+            class = host_class.superclass;
+        }
+        false
     }
 
     pub fn class_is_subclass_of(&self, class: Class, superclass: Class) -> bool {
@@ -1114,5 +1213,62 @@ pub(crate) fn class_getMethodImplementation(env: &mut Environment, cls: Class, n
             return IMP::guest_null();
         }
         class = next;
+    }
+}
+
+#[cfg(test)]
+mod protocol_tests {
+    use super::*;
+
+    #[test]
+    fn detects_direct_inherited_and_unrelated_protocols() {
+        let mut mem = Mem::new();
+        mem.vm_alloc(Some(0x1000), 0x1000).unwrap();
+
+        fn word(mem: &mut Mem, address: u32, value: u32) {
+            mem.write(MutPtr::<u32>::from_bits(address), value);
+        }
+        fn name(mem: &mut Mem, address: u32, text: &str) {
+            let bytes = text.as_bytes();
+            mem.bytes_at_mut(MutPtr::from_bits(address), bytes.len() as u32 + 1)
+                .copy_from_slice(&[bytes, b"\0"].concat());
+        }
+
+        // Child protocol at 0x1100.
+        word(&mut mem, 0x1100, 0); // isa
+        word(&mut mem, 0x1104, 0x1300); // name
+        word(&mut mem, 0x1108, 0); // no inherited protocols
+        name(&mut mem, 0x1300, "Child");
+
+        // Parent protocol at 0x1120 adopts Child.
+        word(&mut mem, 0x1120, 0);
+        word(&mut mem, 0x1124, 0x1320);
+        word(&mut mem, 0x1128, 0x1200);
+        name(&mut mem, 0x1320, "Parent");
+
+        word(&mut mem, 0x1200, 1); // adopted protocol count
+        word(&mut mem, 0x1204, 0x1100); // Child
+        word(&mut mem, 0x1220, 1); // class protocol count
+        word(&mut mem, 0x1224, 0x1120); // Parent
+
+        let list = Ptr::from_bits(0x1220);
+        assert!(protocol_list_conforms_to(
+            &mem, list, "Parent", &mut HashSet::new()
+        ));
+        assert!(protocol_list_conforms_to(
+            &mem, list, "Child", &mut HashSet::new()
+        ));
+        assert!(!protocol_list_conforms_to(
+            &mem, list, "Unrelated", &mut HashSet::new()
+        ));
+        assert!(!protocol_list_conforms_to(
+            &mem, Ptr::null(), "Child", &mut HashSet::new()
+        ));
+
+        // Malformed cycles must not lead to unbounded recursion.
+        word(&mut mem, 0x1108, 0x1220);
+        assert!(!protocol_list_conforms_to(
+            &mem, list, "Unrelated", &mut HashSet::new()
+        ));
     }
 }

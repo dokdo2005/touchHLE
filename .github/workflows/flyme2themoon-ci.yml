@@ -1,0 +1,37 @@
+name: FlyMe2theMoon runtime validation
+
+on:
+  push:
+    branches:
+      - feat/objc-protocol-conformance
+  pull_request:
+    branches:
+      - flyme2themoon
+
+permissions:
+  contents: read
+
+jobs:
+  macos-check:
+    runs-on: macos-15
+    steps:
+      - name: Checkout fork branch
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install native build dependencies
+        run: brew install boost cmake
+
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Check compilation
+        env:
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+        run: cargo check
+
+      - name: Test Objective-C protocol parser
+        env:
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+        run: cargo test --lib protocol_tests::detects_direct_inherited_and_unrelated_protocols
